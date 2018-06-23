@@ -1,0 +1,13 @@
+[package]
+name = "extsort"
+version = "0.1.0"
+authors = ["boxdot <d@zerovolt.org>", "Christian Vetter <veaac.fdirct@gmail.com>"]
+
+[dependencies]
+byteorder = "*"
+failure = "*"
+log = "*"
+memmap = "0.6"
+proptest = "*"
+rand = "*"
+stderrlog = "*"
