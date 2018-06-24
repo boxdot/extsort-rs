@@ -5,11 +5,11 @@ authors = ["boxdot <d@zerovolt.org>", "Christian Vetter <veaac.fdirct@gmail.com>
 
 [dependencies]
 byteorder = "1.2"
+env_logger = "0.5"
 failure = "0.1"
 log = "0.4"
 memmap = "0.6"
 rand = "0.5"
-stderrlog = "0.4"
 tempfile = "3"
 
 [dev-dependencies]

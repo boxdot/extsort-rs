@@ -2,9 +2,9 @@ extern crate byteorder;
 extern crate extsort;
 #[macro_use]
 extern crate failure;
+extern crate env_logger;
 extern crate memmap;
 extern crate rand;
-extern crate stderrlog;
 
 use byteorder::{ByteOrder, LittleEndian};
 use failure::Error;
@@ -26,12 +26,7 @@ fn write_element(data: &mut [u8], index: usize, value: u64) {
 }
 
 fn main() -> Result<(), Error> {
-    stderrlog::new()
-        .module(module_path!())
-        .verbosity(5)
-        .timestamp(stderrlog::Timestamp::Off)
-        .init()
-        .unwrap();
+    env_logger::init();
 
     let mut args = env::args().skip(1);
     let filename = args.next()

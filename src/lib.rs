@@ -8,7 +8,6 @@ extern crate log;
 extern crate byteorder;
 extern crate memmap;
 extern crate rand;
-extern crate stderrlog;
 extern crate tempfile;
 
 use lower_bound::lower_bound;

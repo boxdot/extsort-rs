@@ -1,17 +1,16 @@
 extern crate byteorder;
+extern crate env_logger;
 extern crate extsort;
 extern crate failure;
 extern crate memmap;
 extern crate rand;
-extern crate stderrlog;
 extern crate tempfile;
 
 use byteorder::{ByteOrder, LittleEndian};
 use failure::Error;
 use memmap::Mmap;
 use rand::distributions::Uniform;
-use rand::Rng;
-use rand::{SeedableRng, StdRng};
+use rand::{Rng, SeedableRng, StdRng};
 use std::io::{BufWriter, Write};
 use tempfile::{tempfile, NamedTempFile};
 
@@ -36,6 +35,14 @@ pub fn ref_slice<A>(s: &A) -> &[A] {
     unsafe { slice::from_raw_parts(s, 1) }
 }
 
+fn gen_constant_file(size: usize, value: u8) -> io::Result<File> {
+    let mut buf_writer = BufWriter::new(tempfile()?);
+    for _ in 0..size {
+        buf_writer.write(ref_slice(&value))?;
+    }
+    Ok(buf_writer.into_inner()?)
+}
+
 fn gen_random_file(size: usize) -> io::Result<File> {
     let mut buf_writer = BufWriter::new(tempfile()?);
     let mut rng: StdRng = SeedableRng::from_seed(SEED);
@@ -45,39 +52,50 @@ fn gen_random_file(size: usize) -> io::Result<File> {
     Ok(buf_writer.into_inner()?)
 }
 
+fn run<F>(generate_file: F) -> Result<(), Error>
+where
+    F: FnOnce() -> io::Result<File>,
+{
+    let file = generate_file()?;
+    let file_mmap = unsafe { Mmap::map(&file)? };
+    let file_data = &file_mmap[..];
+
+    // sort externally
+    let out_file = NamedTempFile::new()?;
+    let out_filename = out_file.path().to_str().unwrap();
+    extsort::extsort(&file_mmap[..], read_element, write_element, out_filename)?;
+
+    // sort in memory
+    let num_elements = file_data.len() / ELEMENT_SIZE;
+    let mut elements: Vec<_> = (0..num_elements)
+        .map(|index| read_element(&file_data, index))
+        .collect();
+    elements.sort();
+
+    // read sorted file
+    let sorted_file = File::open(out_filename)?;
+    let sorted_mmap = unsafe { Mmap::map(&sorted_file)? };
+    let sorted_data = &sorted_mmap[..];
+    let sorted_elements: Vec<_> = (0..num_elements)
+        .map(|index| read_element(&sorted_data, index))
+        .collect();
+
+    // compare
+    assert_eq!(elements, sorted_elements);
+
+    Ok(())
+}
+
 #[test]
 fn test_extsort_10mb_random() {
-    let run = || -> Result<(), Error> {
-        stderrlog::new().verbosity(5).init().unwrap();
+    let _ = env_logger::try_init();
+    let res = run(|| gen_random_file(10 * 1024 * 1024));
+    assert!(res.is_ok());
+}
 
-        let file = gen_random_file(10 * 1024 * 1024)?;
-        let file_mmap = unsafe { Mmap::map(&file)? };
-        let file_data = &file_mmap[..];
-
-        // sort externally
-        let out_file = NamedTempFile::new()?;
-        let out_filename = out_file.path().to_str().unwrap();
-        extsort::extsort(&file_mmap[..], read_element, write_element, out_filename)?;
-
-        // sort in memory
-        let num_elements = file_data.len() / ELEMENT_SIZE;
-        let mut elements: Vec<_> = (0..num_elements)
-            .map(|index| read_element(&file_data, index))
-            .collect();
-        elements.sort();
-
-        // read sorted file
-        let sorted_file = File::open(out_filename)?;
-        let sorted_mmap = unsafe { Mmap::map(&sorted_file)? };
-        let sorted_data = &sorted_mmap[..];
-        let sorted_elements: Vec<_> = (0..num_elements)
-            .map(|index| read_element(&sorted_data, index))
-            .collect();
-
-        // compare
-        assert_eq!(elements, sorted_elements);
-
-        Ok(())
-    };
-    assert!(run().is_ok());
+#[test]
+fn test_extsort_10mb_constant() {
+    let _ = env_logger::try_init();
+    let res = run(|| gen_constant_file(10 * 1024 * 1024, 0));
+    assert!(res.is_ok());
 }
