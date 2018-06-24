@@ -8,7 +8,6 @@ extern crate failure;
 extern crate log;
 extern crate byteorder;
 extern crate memmap;
-extern crate pbr;
 extern crate rand;
 extern crate stderrlog;
 
