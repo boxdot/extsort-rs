@@ -99,7 +99,7 @@ where
     }
     trace!("counters: {:?}", counters);
 
-    let mut positions = prefix_sum(&counters);
+    let mut positions = prefix_sum(counters);
     trace!("positions: {:?}", positions);
 
     trace!("writing blocks to temporary file");
@@ -169,13 +169,18 @@ where
     Ok(())
 }
 
-fn find_partition<T: Ord>(value: &T, samples: &Vec<T>) -> usize {
-    lower_bound(&samples[..], &value)
+fn find_partition<T: Ord>(value: &T, samples: &[T]) -> usize {
+    lower_bound(samples, &value)
 }
 
-fn prefix_sum<T: Default + ops::AddAssign + Copy>(v: &Vec<T>) -> Vec<T> {
-    v.iter()
-        .scan(T::default(), |acc, &value| {
+fn prefix_sum<I, T>(iterable: I) -> Vec<T>
+where
+    I: IntoIterator<Item = T>,
+    T: Default + ops::AddAssign + Copy,
+{
+    iterable
+        .into_iter()
+        .scan(T::default(), |acc, value| {
             let res = Some(*acc);
             *acc += value;
             res
