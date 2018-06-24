@@ -9,12 +9,14 @@ extern crate byteorder;
 extern crate memmap;
 extern crate rand;
 extern crate stderrlog;
+extern crate tempfile;
 
 use lower_bound::lower_bound;
 
 use failure::Error;
 use memmap::MmapMut;
 use rand::{seq, SeedableRng, StdRng};
+use tempfile::tempfile;
 
 use std::fs::OpenOptions;
 use std::mem;
@@ -26,13 +28,6 @@ pub struct ExtSortOptions {
     pub seed: [u8; 32],
     pub block_size: usize,
     pub oversampling_factor: usize,
-    pub tmp_suffix: String,
-}
-
-impl ExtSortOptions {
-    fn get_tmp_filename<S: AsRef<str>>(&self, filename: S) -> String {
-        format!("{}{}", filename.as_ref(), self.tmp_suffix)
-    }
 }
 
 impl Default for ExtSortOptions {
@@ -41,7 +36,6 @@ impl Default for ExtSortOptions {
             seed: *b"f16d09be9defef9145d36d151913f288",
             block_size: 500 * 1024 * 1024, // 500 MB
             oversampling_factor: 10,
-            tmp_suffix: ".tmp".into(),
         }
     }
 }
@@ -108,13 +102,8 @@ where
     let mut positions = prefix_sum(&counters);
     trace!("positions: {:?}", positions);
 
-    let tmp_filename = options.get_tmp_filename(out_filename.as_ref());
-    trace!("writing blocks to temporary file: {}", tmp_filename);
-    let tmp_file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .open(tmp_filename)?;
+    trace!("writing blocks to temporary file");
+    let tmp_file = tempfile()?;
     tmp_file.set_len(data.len() as u64)?;
     let mut tmp_mmap = unsafe { MmapMut::map_mut(&tmp_file)? };
     let tmp_data = &mut tmp_mmap[..];
