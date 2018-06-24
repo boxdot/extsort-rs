@@ -4,10 +4,10 @@ version = "0.1.0"
 authors = ["boxdot <d@zerovolt.org>", "Christian Vetter <veaac.fdirct@gmail.com>"]
 
 [dependencies]
-byteorder = "*"
-failure = "*"
-log = "*"
+byteorder = "1.2"
+failure = "0.1"
+log = "0.4"
 memmap = "0.6"
-proptest = "*"
-rand = "*"
-stderrlog = "*"
+proptest = "0.7"
+rand = "0.5"
+stderrlog = "0.4"
