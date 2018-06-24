@@ -17,7 +17,7 @@ use memmap::{Mmap, MmapMut};
 use rand::{seq, SeedableRng, StdRng};
 
 use std::env;
-use std::fs::{self, OpenOptions};
+use std::fs::{File, OpenOptions};
 use std::io;
 use std::mem;
 use std::ops;
@@ -26,6 +26,13 @@ struct ExtSortOptions {
     seed: [u8; 32],
     block_size: usize,
     oversampling_factor: usize,
+    tmp_suffix: String,
+}
+
+impl ExtSortOptions {
+    fn get_tmp_filename<S: AsRef<str>>(&self, filename: S) -> String {
+        format!("{}{}", filename.as_ref(), self.tmp_suffix)
+    }
 }
 
 impl Default for ExtSortOptions {
@@ -34,6 +41,7 @@ impl Default for ExtSortOptions {
             seed: *b"f16d09be9defef9145d36d151913f288",
             block_size: 500 * 1024 * 1024, // 500 MB
             oversampling_factor: 10,
+            tmp_suffix: ".tmp".into(),
         }
     }
 }
@@ -77,56 +85,42 @@ fn lower_bound<T: PartialOrd>(slice: &[T], value: T) -> usize {
     (s.as_ptr() as usize - slice.as_ptr() as usize) / mem::size_of::<T>()
 }
 
-fn main() -> Result<(), Error> {
-    stderrlog::new()
-        .module(module_path!())
-        .verbosity(3)
-        .timestamp(stderrlog::Timestamp::Off)
-        .init()
-        .unwrap();
-
-    let mut args = env::args().skip(1);
-    let filename = args.next()
-        .ok_or_else(|| format_err!("Usage: external-sample-sort <filename>"))?;
+fn extsort<P: AsRef<str>>(data: &[u8], out_filename: P) -> Result<(), Error> {
+    info!("extsort on data of size: {}", data.len());
 
     let options = ExtSortOptions::default();
+    let file_size = data.len();
 
-    let file = OpenOptions::new().read(true).write(true).open(&filename)?;
-    let file_mmap = unsafe { Mmap::map(&file)? };
-    let file_data = &file_mmap[..];
-
-    let metadata = fs::metadata(&filename)?;
-    let file_size = metadata.len() as usize;
-    info!("File size: {}", file_size);
     let num_elements = file_size / ELEMENT_SIZE;
     let num_samples =
-        options.oversampling_factor * (file_size + options.block_size - 1) / options.block_size;
+        options.oversampling_factor * (file_size + (options.block_size - 1)) / options.block_size;
 
+    info!("sampling sequence of {} pivot(s)", num_samples);
     let mut rng: StdRng = SeedableRng::from_seed(options.seed);
-    info!("Sampling");
     let mut sample_indices = seq::sample_indices(&mut rng, num_elements, num_samples);
     sample_indices.sort();
     let samples: Result<Vec<u64>, io::Error> = sample_indices
         .into_iter()
-        .map(|index| -> Result<u64, io::Error> { read_element(file_data, index) })
+        .map(|index| -> Result<u64, io::Error> { read_element(data, index) })
         .collect();
     let mut samples = samples?;
     samples.sort();
 
-    info!("{:?}", samples);
+    info!("pivots: {:?}", samples);
 
     let mut counters = vec![0usize; num_samples + 1];
     for i in 0..num_elements {
-        let value = read_element(file_data, i)?;
+        let value = read_element(data, i)?;
         let part = find_partition(value, &samples);
         counters[part] += 1;
     }
-    info!("Counters: {:?}", counters);
+    info!("counters: {:?}", counters);
 
     let mut positions = prefix_sum(&counters);
-    info!("Positions: {:?}", positions);
+    info!("positions: {:?}", positions);
 
-    let tmp_filename = format!("{}.tmp", &filename);
+    let tmp_filename = options.get_tmp_filename(out_filename.as_ref());
+    info!("writing blocks to temporary file: {}", tmp_filename);
     let tmp_file = OpenOptions::new()
         .create(true)
         .read(true)
@@ -138,19 +132,18 @@ fn main() -> Result<(), Error> {
 
     let mut output_indices = positions.clone();
     for i in 0..num_elements {
-        let value = read_element(file_data, i)?;
+        let value = read_element(data, i)?;
         let part = find_partition(value, &samples);
         write_element(tmp_data, output_indices[part], value)?;
         output_indices[part] += 1;
     }
-    info!("Partitioning done.");
 
-    let out_filename = format!("{}.out", &filename);
+    info!("writing result file: {}", out_filename.as_ref());
     let out_file = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
-        .open(out_filename)?;
+        .open(out_filename.as_ref())?;
     out_file.set_len(file_size as u64)?;
     let mut out_mmap = unsafe { MmapMut::map_mut(&out_file)? };
     let out_data = &mut out_mmap[..];
@@ -159,6 +152,13 @@ fn main() -> Result<(), Error> {
     let blocks = positions.iter().zip(positions.iter().skip(1));
 
     for (&start, &end) in blocks {
+        info!(
+            "writing block {:#10} - {:#10}: {:#10} elements",
+            start,
+            end,
+            end - start
+        );
+
         // Optimize large blocks with same constant value
         if (end - start) * ELEMENT_SIZE > options.block_size {
             let first_element = read_element(tmp_data, start)?;
@@ -173,11 +173,6 @@ fn main() -> Result<(), Error> {
             warn!("Large block: {}", end - start);
         }
 
-        info!(
-            "{}",
-            100 * ELEMENT_SIZE * (end - start) / options.block_size
-        );
-
         let partition: Result<Vec<u64>, io::Error> = (start..end)
             .map(|index| read_element(tmp_data, index))
             .collect();
@@ -189,27 +184,47 @@ fn main() -> Result<(), Error> {
         }
     }
 
-    // sanity
+    Ok(())
+}
 
-    let sanity_filename = format!("{}.sanity", &filename);
-    let sanity_file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .open(sanity_filename)?;
-    sanity_file.set_len(file_size as u64)?;
-    let mut sanity_mmap = unsafe { MmapMut::map_mut(&sanity_file)? };
-    let sanity_data = &mut sanity_mmap[..];
+fn main() -> Result<(), Error> {
+    stderrlog::new()
+        .module(module_path!())
+        .verbosity(3)
+        .timestamp(stderrlog::Timestamp::Off)
+        .init()
+        .unwrap();
 
-    let partition: Result<Vec<u64>, io::Error> = (0..num_elements)
-        .map(|index| read_element(tmp_data, index))
+    let mut args = env::args().skip(1);
+    let filename = args.next()
+        .ok_or_else(|| format_err!("Usage: external-sample-sort <filename>"))?;
+
+    let file = OpenOptions::new().read(true).write(true).open(&filename)?;
+    let file_mmap = unsafe { Mmap::map(&file)? };
+    let file_data = &file_mmap[..];
+
+    let out_filename = format!("{}.sorted", filename);
+    extsort(&file_mmap[..], &out_filename)?;
+
+    // test
+    // sort in memory
+    let num_elements = file_data.len() / ELEMENT_SIZE;
+
+    let elements: Result<Vec<_>, io::Error> = (0..num_elements)
+        .map(|index| read_element(&file_data, index))
         .collect();
-    let mut partition = partition?;
-    partition.sort();
+    let mut elements = elements?;
+    elements.sort();
 
-    for (i, value) in partition.into_iter().enumerate() {
-        write_element(sanity_data, i, value)?;
-    }
+    let sorted_file = File::open(out_filename)?;
+    let sorted_mmap = unsafe { Mmap::map(&sorted_file)? };
+    let sorted_data = &sorted_mmap[..];
+    let sorted_elements: Result<Vec<_>, io::Error> = (0..num_elements)
+        .map(|index| read_element(&sorted_data, index))
+        .collect();
+    let sorted_elements = sorted_elements?;
+
+    assert_eq!(elements, sorted_elements);
 
     Ok(())
 }
