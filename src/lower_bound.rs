@@ -1,10 +1,10 @@
 use std::mem;
 
-pub fn lower_bound<T: PartialOrd>(slice: &[T], value: T) -> usize {
+pub fn lower_bound<T: Ord>(slice: &[T], value: &T) -> usize {
     let mut s = slice;
     while !s.is_empty() {
         let mid = s.len() / 2;
-        s = if s[mid] < value {
+        s = if &s[mid] < value {
             &s[mid + 1..]
         } else {
             &s[..mid]
@@ -34,7 +34,7 @@ mod test {
         ) {
             let mut v = v.clone();
             v.sort();
-            assert_eq!(lower_bound(&v, value), lower_bound_reference(&v, value));
+            assert_eq!(lower_bound(&v, &value), lower_bound_reference(&v, value));
         }
     }
 }

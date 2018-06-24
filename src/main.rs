@@ -6,12 +6,24 @@ extern crate memmap;
 extern crate rand;
 extern crate stderrlog;
 
+use byteorder::{ByteOrder, LittleEndian};
 use failure::Error;
 use memmap::Mmap;
 
 use std::env;
 use std::fs::{File, OpenOptions};
-use std::io;
+
+const ELEMENT_SIZE: usize = 8; // size of u64 in bytes
+
+pub fn read_element(data: &[u8], index: usize) -> u64 {
+    let buf = &data[index * ELEMENT_SIZE..index * ELEMENT_SIZE + ELEMENT_SIZE];
+    LittleEndian::read_u64(buf)
+}
+
+fn write_element(data: &mut [u8], index: usize, value: u64) {
+    let buf = &mut data[index * ELEMENT_SIZE..index * ELEMENT_SIZE + ELEMENT_SIZE];
+    LittleEndian::write_u64(buf, value)
+}
 
 fn main() -> Result<(), Error> {
     stderrlog::new()
@@ -30,25 +42,23 @@ fn main() -> Result<(), Error> {
     let file_data = &file_mmap[..];
 
     let out_filename = format!("{}.sorted", filename);
-    extsort::extsort(&file_mmap[..], &out_filename)?;
+    extsort::extsort(&file_mmap[..], read_element, write_element, &out_filename)?;
 
     // test
     // sort in memory
-    let num_elements = file_data.len() / extsort::ELEMENT_SIZE;
+    let num_elements = file_data.len() / ELEMENT_SIZE;
 
-    let elements: Result<Vec<_>, io::Error> = (0..num_elements)
-        .map(|index| extsort::read_element(&file_data, index))
+    let mut elements: Vec<_> = (0..num_elements)
+        .map(|index| read_element(&file_data, index))
         .collect();
-    let mut elements = elements?;
     elements.sort();
 
     let sorted_file = File::open(out_filename)?;
     let sorted_mmap = unsafe { Mmap::map(&sorted_file)? };
     let sorted_data = &sorted_mmap[..];
-    let sorted_elements: Result<Vec<_>, io::Error> = (0..num_elements)
-        .map(|index| extsort::read_element(&sorted_data, index))
+    let sorted_elements: Vec<_> = (0..num_elements)
+        .map(|index| read_element(&sorted_data, index))
         .collect();
-    let sorted_elements = sorted_elements?;
 
     assert_eq!(elements, sorted_elements);
 

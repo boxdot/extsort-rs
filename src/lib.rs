@@ -12,13 +12,11 @@ extern crate stderrlog;
 
 use lower_bound::lower_bound;
 
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use failure::Error;
 use memmap::MmapMut;
 use rand::{seq, SeedableRng, StdRng};
 
 use std::fs::OpenOptions;
-use std::io;
 use std::mem;
 use std::ops;
 
@@ -48,20 +46,8 @@ impl Default for ExtSortOptions {
     }
 }
 
-type ElementType = u64;
-pub const ELEMENT_SIZE: usize = mem::size_of::<ElementType>();
-
-pub fn read_element(data: &[u8], index: usize) -> io::Result<ElementType> {
-    (&data[index * ELEMENT_SIZE..index * ELEMENT_SIZE + ELEMENT_SIZE]).read_u64::<LittleEndian>()
-}
-
-fn write_element(data: &mut [u8], index: usize, value: ElementType) -> io::Result<()> {
-    (&mut data[index * ELEMENT_SIZE..index * ELEMENT_SIZE + ELEMENT_SIZE])
-        .write_u64::<LittleEndian>(value)
-}
-
-fn find_partition(value: u64, samples: &Vec<u64>) -> usize {
-    lower_bound(&samples[..], value)
+fn find_partition<T: Ord>(value: &T, samples: &Vec<T>) -> usize {
+    lower_bound(&samples[..], &value)
 }
 
 fn prefix_sum<T: Default + ops::AddAssign + Copy>(v: &Vec<T>) -> Vec<T> {
@@ -74,13 +60,25 @@ fn prefix_sum<T: Default + ops::AddAssign + Copy>(v: &Vec<T>) -> Vec<T> {
         .collect()
 }
 
-pub fn extsort<P: AsRef<str>>(data: &[u8], out_filename: P) -> Result<(), Error> {
+pub fn extsort<S, T, FnRead, FnWrite>(
+    data: &[u8],
+    read_element: FnRead,
+    write_element: FnWrite,
+    out_filename: S,
+) -> Result<(), Error>
+where
+    S: AsRef<str>,
+    T: Clone + Ord,
+    FnRead: Fn(&[u8], usize) -> T,
+    FnWrite: Fn(&mut [u8], usize, T),
+{
     trace!("extsort on data of size: {}", data.len());
 
     let options = ExtSortOptions::default();
     let file_size = data.len();
 
-    let num_elements = file_size / ELEMENT_SIZE;
+    let element_size = mem::size_of::<T>();
+    let num_elements = file_size / element_size;
     let num_samples =
         options.oversampling_factor * (file_size + (options.block_size - 1)) / options.block_size;
 
@@ -88,19 +86,16 @@ pub fn extsort<P: AsRef<str>>(data: &[u8], out_filename: P) -> Result<(), Error>
     let mut rng: StdRng = SeedableRng::from_seed(options.seed);
     let mut sample_indices = seq::sample_indices(&mut rng, num_elements, num_samples);
     sample_indices.sort();
-    let samples: Result<Vec<u64>, io::Error> = sample_indices
+    let mut samples: Vec<T> = sample_indices
         .into_iter()
-        .map(|index| -> Result<u64, io::Error> { read_element(data, index) })
+        .map(|index| read_element(data, index))
         .collect();
-    let mut samples = samples?;
     samples.sort();
-
-    trace!("pivots: {:?}", samples);
 
     let mut counters = vec![0usize; num_samples + 1];
     for i in 0..num_elements {
-        let value = read_element(data, i)?;
-        let part = find_partition(value, &samples);
+        let value = read_element(data, i);
+        let part = find_partition(&value, &samples);
         counters[part] += 1;
     }
     trace!("counters: {:?}", counters);
@@ -121,9 +116,9 @@ pub fn extsort<P: AsRef<str>>(data: &[u8], out_filename: P) -> Result<(), Error>
 
     let mut output_indices = positions.clone();
     for i in 0..num_elements {
-        let value = read_element(data, i)?;
-        let part = find_partition(value, &samples);
-        write_element(tmp_data, output_indices[part], value)?;
+        let value = read_element(data, i);
+        let part = find_partition(&value, &samples);
+        write_element(tmp_data, output_indices[part], value);
         output_indices[part] += 1;
     }
 
@@ -149,12 +144,12 @@ pub fn extsort<P: AsRef<str>>(data: &[u8], out_filename: P) -> Result<(), Error>
         );
 
         // Optimize large blocks with same constant value
-        if (end - start) * ELEMENT_SIZE > options.block_size {
-            let first_element = read_element(tmp_data, start)?;
-            let last_element = read_element(tmp_data, end)?;
+        if (end - start) * element_size > options.block_size {
+            let first_element = read_element(tmp_data, start);
+            let last_element = read_element(tmp_data, end);
             if first_element == last_element {
                 for i in start..end {
-                    write_element(out_data, i, first_element)?;
+                    write_element(out_data, i, first_element.clone());
                 }
                 continue;
             }
@@ -167,14 +162,13 @@ pub fn extsort<P: AsRef<str>>(data: &[u8], out_filename: P) -> Result<(), Error>
             );
         }
 
-        let partition: Result<Vec<u64>, io::Error> = (start..end)
+        let mut partition: Vec<T> = (start..end)
             .map(|index| read_element(tmp_data, index))
             .collect();
-        let mut partition = partition?;
         partition.sort();
 
         for (i, value) in partition.into_iter().enumerate() {
-            write_element(out_data, i + start, value)?;
+            write_element(out_data, i + start, value);
         }
     }
 
