@@ -22,10 +22,21 @@ use std::io;
 use std::mem;
 use std::ops;
 
-const SEED: &[u8; 32] = b"f16d09be9defef9145d36d151913f288";
+struct ExtSortOptions {
+    seed: [u8; 32],
+    block_size: usize,
+    oversampling_factor: usize,
+}
 
-const BLOCK_SIZE: usize = 128 * 1024;
-const OVERSAMPLING_FACTOR: usize = 10;
+impl Default for ExtSortOptions {
+    fn default() -> Self {
+        Self {
+            seed: *b"f16d09be9defef9145d36d151913f288",
+            block_size: 500 * 1024 * 1024, // 500 MB
+            oversampling_factor: 10,
+        }
+    }
+}
 
 type ElementType = u64;
 const ELEMENT_SIZE: usize = mem::size_of::<ElementType>();
@@ -78,6 +89,8 @@ fn main() -> Result<(), Error> {
     let filename = args.next()
         .ok_or_else(|| format_err!("Usage: external-sample-sort <filename>"))?;
 
+    let options = ExtSortOptions::default();
+
     let file = OpenOptions::new().read(true).write(true).open(&filename)?;
     let file_mmap = unsafe { Mmap::map(&file)? };
     let file_data = &file_mmap[..];
@@ -86,9 +99,10 @@ fn main() -> Result<(), Error> {
     let file_size = metadata.len() as usize;
     info!("File size: {}", file_size);
     let num_elements = file_size / ELEMENT_SIZE;
-    let num_samples = OVERSAMPLING_FACTOR * (file_size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    let num_samples =
+        options.oversampling_factor * (file_size + options.block_size - 1) / options.block_size;
 
-    let mut rng: StdRng = SeedableRng::from_seed(*SEED);
+    let mut rng: StdRng = SeedableRng::from_seed(options.seed);
     info!("Sampling");
     let mut sample_indices = seq::sample_indices(&mut rng, num_elements, num_samples);
     sample_indices.sort();
@@ -146,7 +160,7 @@ fn main() -> Result<(), Error> {
 
     for (&start, &end) in blocks {
         // Optimize large blocks with same constant value
-        if (end - start) * ELEMENT_SIZE > BLOCK_SIZE {
+        if (end - start) * ELEMENT_SIZE > options.block_size {
             let first_element = read_element(tmp_data, start)?;
             let last_element = read_element(tmp_data, end)?;
             if first_element == last_element {
@@ -159,7 +173,10 @@ fn main() -> Result<(), Error> {
             warn!("Large block: {}", end - start);
         }
 
-        info!("{}", 100 * ELEMENT_SIZE * (end - start) / BLOCK_SIZE);
+        info!(
+            "{}",
+            100 * ELEMENT_SIZE * (end - start) / options.block_size
+        );
 
         let partition: Result<Vec<u64>, io::Error> = (start..end)
             .map(|index| read_element(tmp_data, index))
