@@ -23,10 +23,10 @@ use std::ops;
 mod lower_bound;
 
 pub struct ExtSortOptions {
-    seed: [u8; 32],
-    block_size: usize,
-    oversampling_factor: usize,
-    tmp_suffix: String,
+    pub seed: [u8; 32],
+    pub block_size: usize,
+    pub oversampling_factor: usize,
+    pub tmp_suffix: String,
 }
 
 impl ExtSortOptions {
@@ -46,20 +46,6 @@ impl Default for ExtSortOptions {
     }
 }
 
-fn find_partition<T: Ord>(value: &T, samples: &Vec<T>) -> usize {
-    lower_bound(&samples[..], &value)
-}
-
-fn prefix_sum<T: Default + ops::AddAssign + Copy>(v: &Vec<T>) -> Vec<T> {
-    v.iter()
-        .scan(T::default(), |acc, &value| {
-            let res = Some(*acc);
-            *acc += value;
-            res
-        })
-        .collect()
-}
-
 pub fn extsort<S, T, FnRead, FnWrite>(
     data: &[u8],
     read_element: FnRead,
@@ -72,15 +58,34 @@ where
     FnRead: Fn(&[u8], usize) -> T,
     FnWrite: Fn(&mut [u8], usize, T),
 {
+    extsort_with_options(
+        data,
+        read_element,
+        write_element,
+        out_filename,
+        &ExtSortOptions::default(),
+    )
+}
+
+pub fn extsort_with_options<S, T, FnRead, FnWrite>(
+    data: &[u8],
+    read_element: FnRead,
+    write_element: FnWrite,
+    out_filename: S,
+    options: &ExtSortOptions,
+) -> Result<(), Error>
+where
+    S: AsRef<str>,
+    T: Clone + Ord,
+    FnRead: Fn(&[u8], usize) -> T,
+    FnWrite: Fn(&mut [u8], usize, T),
+{
     trace!("extsort on data of size: {}", data.len());
 
-    let options = ExtSortOptions::default();
-    let file_size = data.len();
-
     let element_size = mem::size_of::<T>();
-    let num_elements = file_size / element_size;
+    let num_elements = data.len() / element_size;
     let num_samples =
-        options.oversampling_factor * (file_size + (options.block_size - 1)) / options.block_size;
+        options.oversampling_factor * (data.len() + (options.block_size - 1)) / options.block_size;
 
     trace!("sampling sequence of {} pivot(s)", num_samples);
     let mut rng: StdRng = SeedableRng::from_seed(options.seed);
@@ -110,7 +115,7 @@ where
         .read(true)
         .write(true)
         .open(tmp_filename)?;
-    tmp_file.set_len(file_size as u64)?;
+    tmp_file.set_len(data.len() as u64)?;
     let mut tmp_mmap = unsafe { MmapMut::map_mut(&tmp_file)? };
     let tmp_data = &mut tmp_mmap[..];
 
@@ -128,7 +133,7 @@ where
         .read(true)
         .write(true)
         .open(out_filename.as_ref())?;
-    out_file.set_len(file_size as u64)?;
+    out_file.set_len(data.len() as u64)?;
     let mut out_mmap = unsafe { MmapMut::map_mut(&out_file)? };
     let out_data = &mut out_mmap[..];
 
@@ -173,4 +178,18 @@ where
     }
 
     Ok(())
+}
+
+fn find_partition<T: Ord>(value: &T, samples: &Vec<T>) -> usize {
+    lower_bound(&samples[..], &value)
+}
+
+fn prefix_sum<T: Default + ops::AddAssign + Copy>(v: &Vec<T>) -> Vec<T> {
+    v.iter()
+        .scan(T::default(), |acc, &value| {
+            let res = Some(*acc);
+            *acc += value;
+            res
+        })
+        .collect()
 }
