@@ -86,7 +86,7 @@ fn lower_bound<T: PartialOrd>(slice: &[T], value: T) -> usize {
 }
 
 fn extsort<P: AsRef<str>>(data: &[u8], out_filename: P) -> Result<(), Error> {
-    info!("extsort on data of size: {}", data.len());
+    trace!("extsort on data of size: {}", data.len());
 
     let options = ExtSortOptions::default();
     let file_size = data.len();
@@ -95,7 +95,7 @@ fn extsort<P: AsRef<str>>(data: &[u8], out_filename: P) -> Result<(), Error> {
     let num_samples =
         options.oversampling_factor * (file_size + (options.block_size - 1)) / options.block_size;
 
-    info!("sampling sequence of {} pivot(s)", num_samples);
+    trace!("sampling sequence of {} pivot(s)", num_samples);
     let mut rng: StdRng = SeedableRng::from_seed(options.seed);
     let mut sample_indices = seq::sample_indices(&mut rng, num_elements, num_samples);
     sample_indices.sort();
@@ -106,7 +106,7 @@ fn extsort<P: AsRef<str>>(data: &[u8], out_filename: P) -> Result<(), Error> {
     let mut samples = samples?;
     samples.sort();
 
-    info!("pivots: {:?}", samples);
+    trace!("pivots: {:?}", samples);
 
     let mut counters = vec![0usize; num_samples + 1];
     for i in 0..num_elements {
@@ -114,13 +114,13 @@ fn extsort<P: AsRef<str>>(data: &[u8], out_filename: P) -> Result<(), Error> {
         let part = find_partition(value, &samples);
         counters[part] += 1;
     }
-    info!("counters: {:?}", counters);
+    trace!("counters: {:?}", counters);
 
     let mut positions = prefix_sum(&counters);
-    info!("positions: {:?}", positions);
+    trace!("positions: {:?}", positions);
 
     let tmp_filename = options.get_tmp_filename(out_filename.as_ref());
-    info!("writing blocks to temporary file: {}", tmp_filename);
+    trace!("writing blocks to temporary file: {}", tmp_filename);
     let tmp_file = OpenOptions::new()
         .create(true)
         .read(true)
@@ -138,7 +138,7 @@ fn extsort<P: AsRef<str>>(data: &[u8], out_filename: P) -> Result<(), Error> {
         output_indices[part] += 1;
     }
 
-    info!("writing result file: {}", out_filename.as_ref());
+    trace!("writing result file: {}", out_filename.as_ref());
     let out_file = OpenOptions::new()
         .create(true)
         .read(true)
@@ -152,7 +152,7 @@ fn extsort<P: AsRef<str>>(data: &[u8], out_filename: P) -> Result<(), Error> {
     let blocks = positions.iter().zip(positions.iter().skip(1));
 
     for (&start, &end) in blocks {
-        info!(
+        trace!(
             "writing block {:#10} - {:#10}: {:#10} elements",
             start,
             end,
@@ -170,7 +170,12 @@ fn extsort<P: AsRef<str>>(data: &[u8], out_filename: P) -> Result<(), Error> {
                 continue;
             }
 
-            warn!("Large block: {}", end - start);
+            warn!(
+                "large block {:#10} - {:#10}: {:#10} elements",
+                start,
+                end,
+                end - start
+            );
         }
 
         let partition: Result<Vec<u64>, io::Error> = (start..end)
@@ -190,7 +195,7 @@ fn extsort<P: AsRef<str>>(data: &[u8], out_filename: P) -> Result<(), Error> {
 fn main() -> Result<(), Error> {
     stderrlog::new()
         .module(module_path!())
-        .verbosity(3)
+        .verbosity(5)
         .timestamp(stderrlog::Timestamp::Off)
         .init()
         .unwrap();
