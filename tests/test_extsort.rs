@@ -1,14 +1,12 @@
 extern crate byteorder;
 extern crate env_logger;
 extern crate extsort;
-extern crate failure;
 extern crate memmap;
 extern crate rand;
 extern crate tempfile;
 
 use byteorder::{ByteOrder, LittleEndian};
 use extsort::Record;
-use failure::Error;
 use memmap::Mmap;
 use rand::distributions::Uniform;
 use rand::{Rng, SeedableRng, StdRng};
@@ -57,7 +55,7 @@ fn gen_random_file(size: usize) -> io::Result<File> {
     Ok(buf_writer.into_inner()?)
 }
 
-fn run<F>(generate_file: F) -> Result<(), Error>
+fn run<F>(generate_file: F) -> Result<(), io::Error>
 where
     F: FnOnce() -> io::Result<File>,
 {

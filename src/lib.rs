@@ -2,7 +2,6 @@
 #[macro_use]
 extern crate proptest;
 
-extern crate failure;
 #[macro_use]
 extern crate log;
 extern crate byteorder;
@@ -12,7 +11,6 @@ extern crate tempfile;
 
 use lower_bound::lower_bound;
 
-use failure::Error;
 use memmap::MmapMut;
 use rand::{seq, SeedableRng, StdRng};
 use tempfile::tempfile;
@@ -56,11 +54,11 @@ impl Default for ExtSortOptions {
     }
 }
 
-pub fn extsort<T: Record, W: io::Write>(data: &[u8], writer: &mut W) -> Result<(), Error> {
+pub fn extsort<T: Record, W: io::Write>(data: &[u8], writer: &mut W) -> Result<(), io::Error> {
     extsort_with_options::<T, W>(data, writer, &ExtSortOptions::default())
 }
 
-pub fn extsort_with_filename<T: Record>(data: &[u8], out_filename: &str) -> Result<(), Error> {
+pub fn extsort_with_filename<T: Record>(data: &[u8], out_filename: &str) -> Result<(), io::Error> {
     let out_file = OpenOptions::new()
         .create(true)
         .read(true)
@@ -78,7 +76,7 @@ pub fn extsort_with_options<T: Record, W: io::Write>(
     data: &[u8],
     writer: &mut W,
     options: &ExtSortOptions,
-) -> Result<(), Error> {
+) -> Result<(), io::Error> {
     trace!("extsort on data of size: {}", data.len());
 
     let element_size = mem::size_of::<T>();
@@ -142,7 +140,7 @@ pub fn extsort_with_options<T: Record, W: io::Write>(
             if first_element == last_element {
                 for _ in start..end {
                     first_element.to_bytes(&mut buf[..]);
-                    writer.write(&buf)?;
+                    writer.write_all(&buf)?;
                 }
                 continue;
             }
@@ -160,9 +158,9 @@ pub fn extsort_with_options<T: Record, W: io::Write>(
             .collect();
         partition.sort();
 
-        for value in partition.into_iter() {
+        for value in partition {
             value.to_bytes(&mut buf);
-            writer.write(&buf)?;
+            writer.write_all(&buf)?;
         }
     }
 
