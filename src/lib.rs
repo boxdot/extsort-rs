@@ -23,6 +23,18 @@ use std::ops;
 
 mod lower_bound;
 
+/// A record is a comparable chunk of memory of constant size.
+///
+/// It is used by `extsort` for sorting data in an arbitrary bytes slice.
+pub trait Record: Ord {
+    /// Size of the record in bytes.
+    const SIZE_IN_BYTES: usize;
+    /// Creates the record from a bytes slice `data`.
+    fn from_bytes(data: &[u8]) -> Self;
+    /// Writes this record to the bytes slice `data`.
+    fn to_bytes(&self, data: &mut [u8]);
+}
+
 pub struct ExtSortOptions {
     pub seed: [u8; 32],
     pub block_size: usize,
@@ -39,40 +51,15 @@ impl Default for ExtSortOptions {
     }
 }
 
-pub fn extsort<S, T, FnRead, FnWrite>(
-    data: &[u8],
-    read_element: FnRead,
-    write_element: FnWrite,
-    out_filename: S,
-) -> Result<(), Error>
-where
-    S: AsRef<str>,
-    T: Clone + Ord,
-    FnRead: Fn(&[u8], usize) -> T,
-    FnWrite: Fn(&mut [u8], usize, T),
-{
-    extsort_with_options(
-        data,
-        read_element,
-        write_element,
-        out_filename,
-        &ExtSortOptions::default(),
-    )
+pub fn extsort<T: Record>(data: &[u8], out_filename: &str) -> Result<(), Error> {
+    extsort_with_options::<T>(data, out_filename, &ExtSortOptions::default())
 }
 
-pub fn extsort_with_options<S, T, FnRead, FnWrite>(
+pub fn extsort_with_options<T: Record>(
     data: &[u8],
-    read_element: FnRead,
-    write_element: FnWrite,
-    out_filename: S,
+    out_filename: &str,
     options: &ExtSortOptions,
-) -> Result<(), Error>
-where
-    S: AsRef<str>,
-    T: Clone + Ord,
-    FnRead: Fn(&[u8], usize) -> T,
-    FnWrite: Fn(&mut [u8], usize, T),
-{
+) -> Result<(), Error> {
     trace!("extsort on data of size: {}", data.len());
 
     let element_size = mem::size_of::<T>();
@@ -86,13 +73,13 @@ where
     sample_indices.sort();
     let mut samples: Vec<T> = sample_indices
         .into_iter()
-        .map(|index| read_element(data, index))
+        .map(|index| T::from_bytes(&data[index * T::SIZE_IN_BYTES..]))
         .collect();
     samples.sort();
 
     let mut counters = vec![0usize; num_samples + 1];
     for i in 0..num_elements {
-        let value = read_element(data, i);
+        let value = T::from_bytes(&data[i * T::SIZE_IN_BYTES..]);
         let part = find_partition(&value, &samples);
         counters[part] += 1;
     }
@@ -109,18 +96,18 @@ where
 
     let mut output_indices = positions.clone();
     for i in 0..num_elements {
-        let value = read_element(data, i);
+        let value = T::from_bytes(&data[i * T::SIZE_IN_BYTES..]);
         let part = find_partition(&value, &samples);
-        write_element(tmp_data, output_indices[part], value);
+        value.to_bytes(&mut tmp_data[output_indices[part] * T::SIZE_IN_BYTES..]);
         output_indices[part] += 1;
     }
 
-    trace!("writing result file: {}", out_filename.as_ref());
+    trace!("writing result file: {}", out_filename);
     let out_file = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
-        .open(out_filename.as_ref())?;
+        .open(out_filename)?;
     out_file.set_len(data.len() as u64)?;
     let mut out_mmap = unsafe { MmapMut::map_mut(&out_file)? };
     let out_data = &mut out_mmap[..];
@@ -138,11 +125,11 @@ where
 
         // Optimize large blocks with same constant value
         if (end - start) * element_size > options.block_size {
-            let first_element = read_element(tmp_data, start);
-            let last_element = read_element(tmp_data, end);
+            let first_element = T::from_bytes(&tmp_data[start * T::SIZE_IN_BYTES..]);
+            let last_element = T::from_bytes(&tmp_data[end * T::SIZE_IN_BYTES..]);
             if first_element == last_element {
                 for i in start..end {
-                    write_element(out_data, i, first_element.clone());
+                    first_element.to_bytes(&mut out_data[i * T::SIZE_IN_BYTES..]);
                 }
                 continue;
             }
@@ -156,12 +143,12 @@ where
         }
 
         let mut partition: Vec<T> = (start..end)
-            .map(|index| read_element(tmp_data, index))
+            .map(|index| T::from_bytes(&tmp_data[index * T::SIZE_IN_BYTES..]))
             .collect();
         partition.sort();
 
         for (i, value) in partition.into_iter().enumerate() {
-            write_element(out_data, i + start, value);
+            value.to_bytes(&mut out_data[(i + start) * T::SIZE_IN_BYTES..]);
         }
     }
 
