@@ -18,6 +18,7 @@ use rand::{seq, SeedableRng, StdRng};
 use tempfile::tempfile;
 
 use std::fs::OpenOptions;
+use std::io;
 use std::mem;
 use std::ops;
 
@@ -30,8 +31,12 @@ pub trait Record: Ord {
     /// Size of the record in bytes.
     const SIZE_IN_BYTES: usize;
     /// Creates the record from a bytes slice `data`.
+    ///
+    /// The implementation must not read more than `SIZE_IN_BYTES` bytes from `data`.
     fn from_bytes(data: &[u8]) -> Self;
     /// Writes this record to the bytes slice `data`.
+    ///
+    // The implementation must not write more than `SIZE_IN_BYTES` bytes to `data`.
     fn to_bytes(&self, data: &mut [u8]);
 }
 
@@ -51,13 +56,27 @@ impl Default for ExtSortOptions {
     }
 }
 
-pub fn extsort<T: Record>(data: &[u8], out_filename: &str) -> Result<(), Error> {
-    extsort_with_options::<T>(data, out_filename, &ExtSortOptions::default())
+pub fn extsort<T: Record, W: io::Write>(data: &[u8], writer: &mut W) -> Result<(), Error> {
+    extsort_with_options::<T, W>(data, writer, &ExtSortOptions::default())
 }
 
-pub fn extsort_with_options<T: Record>(
+pub fn extsort_with_filename<T: Record>(data: &[u8], out_filename: &str) -> Result<(), Error> {
+    let out_file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(out_filename)?;
+    out_file.set_len(data.len() as u64)?;
+    let mut out_mmap = unsafe { MmapMut::map_mut(&out_file)? };
+    let out_data = &mut out_mmap[..];
+    let mut writer = io::Cursor::new(out_data);
+
+    extsort_with_options::<T, io::Cursor<&mut [u8]>>(data, &mut writer, &ExtSortOptions::default())
+}
+
+pub fn extsort_with_options<T: Record, W: io::Write>(
     data: &[u8],
-    out_filename: &str,
+    writer: &mut W,
     options: &ExtSortOptions,
 ) -> Result<(), Error> {
     trace!("extsort on data of size: {}", data.len());
@@ -102,18 +121,11 @@ pub fn extsort_with_options<T: Record>(
         output_indices[part] += 1;
     }
 
-    trace!("writing result file: {}", out_filename);
-    let out_file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .open(out_filename)?;
-    out_file.set_len(data.len() as u64)?;
-    let mut out_mmap = unsafe { MmapMut::map_mut(&out_file)? };
-    let out_data = &mut out_mmap[..];
-
     positions.push(num_elements);
     let blocks = positions.iter().zip(positions.iter().skip(1));
+
+    let mut buf = Vec::new();
+    buf.resize(T::SIZE_IN_BYTES, 0u8);
 
     for (&start, &end) in blocks {
         trace!(
@@ -128,8 +140,9 @@ pub fn extsort_with_options<T: Record>(
             let first_element = T::from_bytes(&tmp_data[start * T::SIZE_IN_BYTES..]);
             let last_element = T::from_bytes(&tmp_data[end * T::SIZE_IN_BYTES..]);
             if first_element == last_element {
-                for i in start..end {
-                    first_element.to_bytes(&mut out_data[i * T::SIZE_IN_BYTES..]);
+                for _ in start..end {
+                    first_element.to_bytes(&mut buf[..]);
+                    writer.write(&buf)?;
                 }
                 continue;
             }
@@ -147,8 +160,9 @@ pub fn extsort_with_options<T: Record>(
             .collect();
         partition.sort();
 
-        for (i, value) in partition.into_iter().enumerate() {
-            value.to_bytes(&mut out_data[(i + start) * T::SIZE_IN_BYTES..]);
+        for value in partition.into_iter() {
+            value.to_bytes(&mut buf);
+            writer.write(&buf)?;
         }
     }
 

@@ -68,7 +68,7 @@ where
     // sort externally
     let out_file = NamedTempFile::new()?;
     let out_filename = out_file.path().to_str().unwrap();
-    extsort::extsort::<RecordU64>(&file_mmap[..], out_filename)?;
+    extsort::extsort_with_filename::<RecordU64>(&file_mmap[..], out_filename)?;
 
     // sort in memory
     let num_elements = file_data.len() / RecordU64::SIZE_IN_BYTES;

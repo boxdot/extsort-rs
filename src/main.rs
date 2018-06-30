@@ -41,7 +41,7 @@ fn main() -> Result<(), Error> {
     let file_data = &file_mmap[..];
 
     let out_filename = format!("{}.sorted", filename);
-    extsort::extsort::<RecordU64>(&file_mmap[..], &out_filename)?;
+    extsort::extsort_with_filename::<RecordU64>(&file_mmap[..], &out_filename)?;
 
     // test
     // sort in memory
