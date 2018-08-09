@@ -11,13 +11,12 @@ extern crate tempfile;
 
 use lower_bound::lower_bound;
 
-use memmap::MmapMut;
+use memmap::{Mmap, MmapMut};
 use rand::{seq, SeedableRng, StdRng};
 use tempfile::tempfile;
 
 use std::fs::OpenOptions;
 use std::io;
-use std::mem;
 use std::ops;
 
 mod lower_bound;
@@ -54,11 +53,15 @@ impl Default for ExtSortOptions {
     }
 }
 
-pub fn extsort<T: Record, W: io::Write>(data: &[u8], writer: &mut W) -> Result<(), io::Error> {
-    extsort_with_options::<T, W>(data, writer, &ExtSortOptions::default())
+pub fn extsort<T: Record>(data: &mut [u8]) -> io::Result<()> {
+    extsort_with_options::<T>(data, &ExtSortOptions::default())
 }
 
-pub fn extsort_with_filename<T: Record>(data: &[u8], out_filename: &str) -> Result<(), io::Error> {
+pub fn extsort_with_writer<T: Record, W: io::Write>(data: &[u8], writer: &mut W) -> io::Result<()> {
+    extsort_with_writer_and_options::<T, W>(data, writer, &ExtSortOptions::default())
+}
+
+pub fn extsort_with_filename<T: Record>(data: &[u8], out_filename: &str) -> io::Result<()> {
     let out_file = OpenOptions::new()
         .create(true)
         .read(true)
@@ -68,19 +71,34 @@ pub fn extsort_with_filename<T: Record>(data: &[u8], out_filename: &str) -> Resu
     let mut out_mmap = unsafe { MmapMut::map_mut(&out_file)? };
     let out_data = &mut out_mmap[..];
     let mut writer = io::Cursor::new(out_data);
-
-    extsort_with_options::<T, io::Cursor<&mut [u8]>>(data, &mut writer, &ExtSortOptions::default())
+    extsort_with_writer_and_options::<T, _>(data, &mut writer, &ExtSortOptions::default())
 }
 
-pub fn extsort_with_options<T: Record, W: io::Write>(
+pub fn extsort_with_options<T: Record>(
+    data: &mut [u8],
+    options: &ExtSortOptions,
+) -> io::Result<()> {
+    trace!("extsort inplace on data of size: {}", data.len());
+    let (tmp_data, blocks) = partition::<T>(data, options)?;
+    let mut writer = io::Cursor::new(data);
+    merge_blocks::<T, _>(&tmp_data, &blocks[..], options.block_size, &mut writer)
+}
+
+pub fn extsort_with_writer_and_options<T: Record, W: io::Write>(
     data: &[u8],
     writer: &mut W,
     options: &ExtSortOptions,
-) -> Result<(), io::Error> {
+) -> io::Result<()> {
     trace!("extsort on data of size: {}", data.len());
+    let (tmp_data, blocks) = partition::<T>(data, options)?;
+    merge_blocks::<T, W>(&tmp_data, &blocks[..], options.block_size, writer)
+}
 
-    let element_size = mem::size_of::<T>();
-    let num_elements = data.len() / element_size;
+fn partition<T: Record>(
+    data: &[u8],
+    options: &ExtSortOptions,
+) -> io::Result<(Mmap, Vec<(usize, usize)>)> {
+    let num_elements = data.len() / T::SIZE_IN_BYTES;
     let num_samples =
         options.oversampling_factor * (data.len() + (options.block_size - 1)) / options.block_size;
 
@@ -108,8 +126,7 @@ pub fn extsort_with_options<T: Record, W: io::Write>(
     trace!("writing blocks to temporary file");
     let tmp_file = tempfile()?;
     tmp_file.set_len(data.len() as u64)?;
-    let mut tmp_mmap = unsafe { MmapMut::map_mut(&tmp_file)? };
-    let tmp_data = &mut tmp_mmap[..];
+    let mut tmp_data = unsafe { MmapMut::map_mut(&tmp_file)? };
 
     let mut output_indices = positions.clone();
     for i in 0..num_elements {
@@ -118,14 +135,27 @@ pub fn extsort_with_options<T: Record, W: io::Write>(
         value.to_bytes(&mut tmp_data[output_indices[part] * T::SIZE_IN_BYTES..]);
         output_indices[part] += 1;
     }
-
     positions.push(num_elements);
-    let blocks = positions.iter().zip(positions.iter().skip(1));
 
+    let blocks: Vec<(usize, usize)> = positions
+        .iter()
+        .cloned()
+        .zip(positions.iter().cloned().skip(1))
+        .collect();
+
+    tmp_data.make_read_only().map(|mmap| (mmap, blocks))
+}
+
+fn merge_blocks<T: Record, W: io::Write>(
+    tmp_data: &[u8],
+    blocks: &[(usize, usize)],
+    block_size: usize,
+    writer: &mut W,
+) -> io::Result<()> {
     let mut buf = Vec::new();
     buf.resize(T::SIZE_IN_BYTES, 0u8);
 
-    for (&start, &end) in blocks {
+    for &(start, end) in blocks {
         trace!(
             "writing block {:#10} - {:#10}: {:#10} elements",
             start,
@@ -134,7 +164,7 @@ pub fn extsort_with_options<T: Record, W: io::Write>(
         );
 
         // Optimize large blocks with same constant value
-        if (end - start) * element_size > options.block_size {
+        if (end - start) * T::SIZE_IN_BYTES > block_size {
             let first_element = T::from_bytes(&tmp_data[start * T::SIZE_IN_BYTES..]);
             let last_element = T::from_bytes(&tmp_data[end * T::SIZE_IN_BYTES..]);
             if first_element == last_element {
