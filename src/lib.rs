@@ -104,7 +104,8 @@ fn partition<T: Record>(
 
     trace!("sampling sequence of {} pivot(s)", num_samples);
     let mut rng: StdRng = SeedableRng::from_seed(options.seed);
-    let mut sample_indices = seq::sample_indices(&mut rng, num_elements, num_samples);
+    let mut sample_indices =
+        seq::sample_indices(&mut rng, num_elements, num_samples.min(num_elements));
     sample_indices.sort();
     let mut samples: Vec<T> = sample_indices
         .into_iter()
@@ -212,6 +213,5 @@ where
             let res = Some(*acc);
             *acc += value;
             res
-        })
-        .collect()
+        }).collect()
 }
